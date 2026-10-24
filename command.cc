@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -306,13 +307,163 @@ void Command::print()
 
 void Command::execute()
 {
-    print();
+    if (_numberOfSimpleCommands == 0)
+    {
+        clear();
+        return;
+    }
 
-    // TODO (Steps 2-5): fork / execvp / redirection / pipes / background
+    // print();   // command table (Part 1) - uncomment to debug
+
+    // save the real stdin/stdout/stderr so we can restore them afterwards
+    int defIn = dup(0), defOut = dup(1), defErr = dup(2);
+
+    int fdIn = -1, fdOut = -1;
+    bool ok = true;
+
+    // ---- open redirection files ----
+    if (_inputFile)
+    {
+        fdIn = open(_inputFile, O_RDONLY);
+        if (fdIn < 0)
+        {
+            fprintf(stderr, "myshell: %s: %s\n", _inputFile, strerror(errno));
+            ok = false;
+        }
+    }
+    if (ok && _outFile)
+    {
+        int flags = O_WRONLY | O_CREAT | (_append ? O_APPEND : O_TRUNC);
+        fdOut = open(_outFile, flags, 0644);
+        if (fdOut < 0)
+        {
+            fprintf(stderr, "myshell: %s: %s\n", _outFile, strerror(errno));
+            ok = false;
+        }
+    }
+    if (ok && _errFile)
+    {
+        if (_out_error && fdOut >= 0)
+        {
+            dup2(fdOut, 2); // >>&  : stderr goes where stdout goes
+        }
+        else
+        {
+            int fdErr = open(_errFile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fdErr < 0)
+            {
+                fprintf(stderr, "myshell: %s: %s\n", _errFile, strerror(errno));
+                ok = false;
+            }
+            else
+            {
+                dup2(fdErr, 2);
+                close(fdErr);
+            }
+        }
+    }
+
+    if (!ok)
+    {
+        if (fdIn >= 0) close(fdIn);
+        if (fdOut >= 0) close(fdOut);
+        dup2(defErr, 2);
+        close(defIn);
+        close(defOut);
+        close(defErr);
+        clear();
+        return;
+    }
+
+    // ---- create the process chain ----
+    std::vector<pid_t> pids;
+    int curIn = (fdIn >= 0) ? fdIn : dup(defIn);
+
+    for (int i = 0; i < _numberOfSimpleCommands; i++)
+    {
+        dup2(curIn, 0); // this command reads from curIn
+        close(curIn);
+
+        int nextIn = -1;
+        if (i == _numberOfSimpleCommands - 1)
+        {
+            // last command: write to the output file or the terminal
+            if (fdOut >= 0)
+            {
+                dup2(fdOut, 1);
+                close(fdOut);
+                fdOut = -1;
+            }
+            else
+            {
+                dup2(defOut, 1);
+            }
+        }
+        else
+        {
+            // not last: write into a pipe, the next command reads from it
+            int p[2];
+            if (pipe(p) < 0)
+            {
+                perror("myshell: pipe");
+                break;
+            }
+            dup2(p[1], 1);
+            close(p[1]);
+            nextIn = p[0];
+        }
+
+        pid_t pid = fork();
+        if (pid < 0)
+        {
+            perror("myshell: fork");
+            if (nextIn >= 0) close(nextIn);
+            break;
+        }
+
+        if (pid == 0)
+        {
+            // child
+            signal(SIGINT, SIG_DFL);
+            close(defIn);
+            close(defOut);
+            close(defErr);
+            if (fdOut >= 0) close(fdOut);
+            if (nextIn >= 0) close(nextIn);
+
+            SimpleCommand *sc = _simpleCommands[i];
+            execvp(sc->_arguments[0], sc->_arguments);
+
+            // only reached if execvp failed
+            if (errno == ENOENT)
+                fprintf(stderr, "myshell: %s: command not found\n", sc->_arguments[0]);
+            else
+                fprintf(stderr, "myshell: %s: %s\n", sc->_arguments[0], strerror(errno));
+            _exit(127);
+        }
+
+        pids.push_back(pid);
+        curIn = nextIn;
+    }
+
+    // ---- restore the shell's own stdin/stdout/stderr ----
+    dup2(defIn, 0);
+    dup2(defOut, 1);
+    dup2(defErr, 2);
+    close(defIn);
+    close(defOut);
+    close(defErr);
+    if (fdOut >= 0) close(fdOut);
+
+    // ---- wait (unless it is a background command) ----
+    if (!_background)
+    {
+        for (size_t k = 0; k < pids.size(); k++)
+            waitpid(pids[k], NULL, 0);
+    }
 
     clear();
 }
-
 void Command::prompt()
 {
     printf("myshell>");
