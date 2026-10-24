@@ -19,7 +19,6 @@
 #include "tokenizer.h"
 
 int logFd = -1; // shell.log
-
 // write a line in shell.log when a child finishes
 void logChild(pid_t pid, int status)
 {
@@ -36,7 +35,6 @@ void logChild(pid_t pid, int status)
     ssize_t w = write(logFd, msg, len);
     (void)w;
 }
-
 // SIGCHLD handler: collect every child that finished and log it
 void childHandler(int sig)
 {
@@ -49,7 +47,6 @@ void childHandler(int sig)
 
     errno = oldErrno;
 }
-
 // the tokenizer cuts on spaces, so "Hello, World!" comes as 2 tokens.
 // this puts them back together and removes the quotes.
 // quoted[i] is true if token i came from inside quotes (no wildcards for those)
@@ -88,7 +85,6 @@ bool joinQuotes(std::vector<Token> &in, std::vector<Token> &out, std::vector<boo
     }
     return true;
 }
-
 // add a word to the command, if it has * or ? replace it with the files that match
 void addArgument(SimpleCommand *sc, const std::string &word, bool quoted)
 {
@@ -106,7 +102,6 @@ void addArgument(SimpleCommand *sc, const std::string &word, bool quoted)
     }
     sc->insertArgument(strdup(word.c_str()));
 }
-
 // print the error and throw away what we built so far
 void syntaxError(const char *msg, SimpleCommand *sc)
 {
@@ -119,8 +114,7 @@ void syntaxError(const char *msg, SimpleCommand *sc)
 
     Command::_currentCommand.clear();
 }
-
-// replace the old file name (if there is one) with a new one
+// replace the old file name law fy  with a new one
 void setFile(char *&dest, const char *name)
 {
     if (dest)
@@ -187,7 +181,7 @@ void parse(std::vector<Token> &rawTokens)
                 setFile(cmd._outFile, file);
                 cmd._append = 1;
             }
-            else // >>& : stdout and stderr to the same file, append
+            else // >>& : stdout and stderr to the same file,( append)
             {
                 setFile(cmd._outFile, file);
                 setFile(cmd._errFile, file);
@@ -245,7 +239,6 @@ SimpleCommand::SimpleCommand()
     _numberOfArguments = 0;
     _arguments = (char **)malloc(_numberOfAvailableArguments * sizeof(char *));
 }
-
 void SimpleCommand::insertArgument(char *argument)
 {
     if (_numberOfAvailableArguments == _numberOfArguments + 1)
@@ -275,7 +268,6 @@ Command::Command()
     _append = 0;
     _background = 0;
 }
-
 void Command::insertSimpleCommand(SimpleCommand *simpleCommand)
 {
     if (_numberOfAvailableSimpleCommands == _numberOfSimpleCommands)
@@ -288,7 +280,6 @@ void Command::insertSimpleCommand(SimpleCommand *simpleCommand)
     _simpleCommands[_numberOfSimpleCommands] = simpleCommand;
     _numberOfSimpleCommands++;
 }
-
 void Command::clear()
 {
     for (int i = 0; i < _numberOfSimpleCommands; i++)
@@ -325,7 +316,6 @@ void Command::clear()
     _append = 0;
     _background = 0;
 }
-
 void Command::print()
 {
     printf("\n\n");
@@ -353,7 +343,6 @@ void Command::print()
            _background ? "YES" : "NO");
     printf("\n\n");
 }
-
 void Command::execute()
 {
     if (_numberOfSimpleCommands == 0)
@@ -361,10 +350,9 @@ void Command::execute()
         clear();
         return;
     }
-
     // print();   // uncomment to see the command table
 
-    // exit and cd have to run in the shell itself, not in a child
+    // exit and cd lazem ye run in shell, not in a child
     if (_numberOfSimpleCommands == 1)
     {
         SimpleCommand *first = _simpleCommands[0];
@@ -384,21 +372,18 @@ void Command::execute()
             }
             else
             {
-                // no argument (or ~) means go home
+                // no argument means go home
                 const char *dir = getenv("HOME");
-                if (first->_numberOfArguments == 2 && strcmp(first->_arguments[1], "~") != 0)
+                if (first->_numberOfArguments == 2)
                     dir = first->_arguments[1];
 
-                if (dir == NULL)
-                    fprintf(stderr, "myshell: cd: HOME not set\n");
-                else if (chdir(dir) != 0)
+                if (chdir(dir) != 0)
                     fprintf(stderr, "myshell: cd: %s: %s\n", dir, strerror(errno));
             }
             clear();
             return;
         }
     }
-
     // keep copies of stdin/stdout/stderr to put them back at the end
     int defIn = dup(0);
     int defOut = dup(1);
@@ -407,7 +392,6 @@ void Command::execute()
     int fdIn = -1;
     int fdOut = -1;
     bool ok = true;
-
     // open the redirection files
     if (_inputFile)
     {
@@ -457,7 +441,6 @@ void Command::execute()
             }
         }
     }
-
     // something failed, clean up and don't run anything
     if (!ok)
     {
@@ -472,7 +455,6 @@ void Command::execute()
         clear();
         return;
     }
-
     // one process for each simple command
     std::vector<pid_t> pids;
     int curIn = (fdIn >= 0) ? fdIn : dup(defIn);
@@ -512,7 +494,6 @@ void Command::execute()
             close(p[1]);
             nextIn = p[0];
         }
-
         pid_t pid = fork();
         if (pid < 0)
         {
@@ -521,7 +502,6 @@ void Command::execute()
                 close(nextIn);
             break;
         }
-
         if (pid == 0)
         {
             // child: Ctrl-C should kill it, and close what it doesn't need
@@ -548,7 +528,6 @@ void Command::execute()
         pids.push_back(pid);
         curIn = nextIn;
     }
-
     // put the shell's stdin/stdout/stderr back
     dup2(defIn, 0);
     dup2(defOut, 1);
@@ -579,7 +558,6 @@ void Command::prompt()
     printf("myshell>");
     fflush(stdout);
 }
-
 Command Command::_currentCommand;
 SimpleCommand *Command::_currentSimpleCommand;
 
@@ -592,22 +570,16 @@ int main()
     if (logFd < 0)
         perror("myshell: cannot open shell.log");
 
-    struct sigaction sa;
-    sa.sa_handler = childHandler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-    sigaction(SIGCHLD, &sa, NULL);
+    signal(SIGCHLD, childHandler);
 
     std::string input;
     Command::_currentCommand.prompt();
-
     while (std::getline(std::cin, input))
     {
         std::vector<Token> tokens = tokenize(input);
         parse(tokens);
         Command::_currentCommand.prompt();
     }
-
     printf("\n");
     return 0;
 }
