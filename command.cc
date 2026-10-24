@@ -18,134 +18,122 @@
 #include "command.h"
 #include "tokenizer.h"
 
-// ---------------- child-termination log (Part 3) ----------------
-static int logFd = -1;
+int logFd = -1; // shell.log
 
-// only write() is used below so these are safe to call from a signal handler
-static void logStr(const char *s)
-{
-    ssize_t r = write(logFd, s, strlen(s));
-    (void)r;
-}
-
-static void logNum(long n)
-{
-    char buf[24];
-    int i = 23;
-    buf[i] = 0;
-    bool neg = n < 0;
-    if (neg)
-        n = -n;
-    do
-    {
-        buf[--i] = '0' + (n % 10);
-        n /= 10;
-    } while (n > 0);
-    if (neg)
-        buf[--i] = '-';
-    logStr(buf + i);
-}
-
-static void logChild(pid_t pid, int status)
+// write a line in shell.log when a child finishes
+void logChild(pid_t pid, int status)
 {
     if (logFd < 0)
         return;
-    logStr("Child process ");
-    logNum(pid);
-    if (WIFEXITED(status))
-    {
-        logStr(" terminated normally, exit status ");
-        logNum(WEXITSTATUS(status));
-    }
-    else if (WIFSIGNALED(status))
-    {
-        logStr(" killed by signal ");
-        logNum(WTERMSIG(status));
-    }
-    logStr("\n");
+
+    char msg[100];
+    int len;
+    if (WIFSIGNALED(status))
+        len = snprintf(msg, sizeof(msg), "Child %d killed by signal %d\n", (int)pid, WTERMSIG(status));
+    else
+        len = snprintf(msg, sizeof(msg), "Child %d terminated, exit status %d\n", (int)pid, WEXITSTATUS(status));
+
+    ssize_t w = write(logFd, msg, len);
+    (void)w;
 }
 
-static void sigchldHandler(int)
+// SIGCHLD handler: collect every child that finished and log it
+void childHandler(int sig)
 {
-    int savedErrno = errno;
+    int oldErrno = errno;
     int status;
     pid_t pid;
+
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
         logChild(pid, status);
-    errno = savedErrno;
+
+    errno = oldErrno;
 }
 
-
-static bool isWord(TokenType t)
-{
-    return t == TOKEN_COMMAND || t == TOKEN_ARGUMENT;
-}
-
-// free the old string (if any) and store a copy of the new one
-static void setStr(char *&dst, const char *src)
-{
-    if (dst)
-        free(dst);
-    dst = strdup(src);
-}
-
-static void freeSimple(SimpleCommand *sc)
-{
-    for (int i = 0; i < sc->_numberOfArguments; i++)
-        free(sc->_arguments[i]);
-    free(sc->_arguments);
-    delete sc;
-}
-
-static void syntaxError(const char *msg, SimpleCommand *sc)
-{
-    fprintf(stderr, "myshell: syntax error: %s\n", msg);
-    freeSimple(sc);
-    Command::_currentCommand.clear();
-}
-
-// The tokenizer splits on spaces, so "Hello, World!" arrives as two tokens:
-//   "Hello,   and   World!"
-// This glues them back into one argument and removes the quotes.
-static bool mergeQuotes(const std::vector<Token> &in, std::vector<Token> &out)
+// the tokenizer cuts on spaces, so "Hello, World!" comes as 2 tokens.
+// this puts them back together and removes the quotes.
+// quoted[i] is true if token i came from inside quotes (no wildcards for those)
+bool joinQuotes(std::vector<Token> &in, std::vector<Token> &out, std::vector<bool> &quoted)
 {
     for (size_t i = 0; i < in.size(); i++)
     {
-        const Token &t = in[i];
+        std::string word = in[i].value;
 
-        if (t.type != TOKEN_EOF && !t.value.empty() &&
-            (t.value[0] == '"' || t.value[0] == '\''))
+        if (in[i].type != TOKEN_EOF && !word.empty() && (word[0] == '"' || word[0] == '\''))
         {
-            char q = t.value[0];
-            std::string s = t.value;
+            char q = word[0];
             size_t j = i;
 
-            // keep appending tokens until we find the closing quote
-            while (s.find(q, 1) == std::string::npos)
+            // keep adding tokens until we find the closing quote
+            while (word.find(q, 1) == std::string::npos)
             {
                 if (j + 1 >= in.size() || in[j + 1].type == TOKEN_EOF)
-                    return false; // unterminated quote
+                    return false;
                 j++;
-                s += " " + in[j].value;
+                word += " " + in[j].value;
             }
 
-            size_t end = s.find(q, 1);
-            std::string word = s.substr(1, end - 1) + s.substr(end + 1);
+            size_t end = word.find(q, 1);
+            word = word.substr(1, end - 1) + word.substr(end + 1);
+
             out.push_back({TOKEN_ARGUMENT, word});
+            quoted.push_back(true);
             i = j;
         }
         else
         {
-            out.push_back(t);
+            out.push_back(in[i]);
+            quoted.push_back(false);
         }
     }
     return true;
 }
 
+// add a word to the command, if it has * or ? replace it with the files that match
+void addArgument(SimpleCommand *sc, const std::string &word, bool quoted)
+{
+    if (!quoted && word.find_first_of("*?") != std::string::npos)
+    {
+        glob_t g;
+        // GLOB_NOCHECK: if nothing matches we keep the word like it was
+        if (glob(word.c_str(), GLOB_NOCHECK, NULL, &g) == 0)
+        {
+            for (size_t i = 0; i < g.gl_pathc; i++)
+                sc->insertArgument(strdup(g.gl_pathv[i]));
+            globfree(&g);
+            return;
+        }
+    }
+    sc->insertArgument(strdup(word.c_str()));
+}
+
+// print the error and throw away what we built so far
+void syntaxError(const char *msg, SimpleCommand *sc)
+{
+    fprintf(stderr, "myshell: syntax error: %s\n", msg);
+
+    for (int i = 0; i < sc->_numberOfArguments; i++)
+        free(sc->_arguments[i]);
+    free(sc->_arguments);
+    delete sc;
+
+    Command::_currentCommand.clear();
+}
+
+// replace the old file name (if there is one) with a new one
+void setFile(char *&dest, const char *name)
+{
+    if (dest)
+        free(dest);
+    dest = strdup(name);
+}
+
 void parse(std::vector<Token> &rawTokens)
 {
     std::vector<Token> tokens;
-    if (!mergeQuotes(rawTokens, tokens))
+    std::vector<bool> quoted;
+
+    if (!joinQuotes(rawTokens, tokens, quoted))
     {
         fprintf(stderr, "myshell: syntax error: unterminated quote\n");
         return;
@@ -163,7 +151,7 @@ void parse(std::vector<Token> &rawTokens)
         {
         case TOKEN_COMMAND:
         case TOKEN_ARGUMENT:
-            sc->insertArgument(strdup(t.value.c_str()));
+            addArgument(sc, t.value, quoted[i]);
             afterPipe = false;
             break;
 
@@ -173,33 +161,36 @@ void parse(std::vector<Token> &rawTokens)
         case TOKEN_ERROR:
         case TOKEN_REDIRECT_AND_ERROR:
         {
-            if (i + 1 >= tokens.size() || !isWord(tokens[i + 1].type))
+            // the next token has to be the file name
+            if (i + 1 >= tokens.size() ||
+                (tokens[i + 1].type != TOKEN_COMMAND && tokens[i + 1].type != TOKEN_ARGUMENT))
                 return syntaxError("missing file name after redirection", sc);
 
-            const char *file = tokens[++i].value.c_str();
+            const char *file = tokens[i + 1].value.c_str();
+            i++;
 
             if (t.type == TOKEN_INPUT)
             {
-                setStr(cmd._inputFile, file);
+                setFile(cmd._inputFile, file);
             }
             else if (t.type == TOKEN_ERROR)
             {
-                setStr(cmd._errFile, file);
+                setFile(cmd._errFile, file);
             }
             else if (t.type == TOKEN_REDIRECT)
             {
-                setStr(cmd._outFile, file);
+                setFile(cmd._outFile, file);
                 cmd._append = 0;
             }
             else if (t.type == TOKEN_APPEND)
             {
-                setStr(cmd._outFile, file);
+                setFile(cmd._outFile, file);
                 cmd._append = 1;
             }
-            else // TOKEN_REDIRECT_AND_ERROR  (>>&)
+            else // >>& : stdout and stderr to the same file, append
             {
-                setStr(cmd._outFile, file);
-                setStr(cmd._errFile, file);
+                setFile(cmd._outFile, file);
+                setFile(cmd._errFile, file);
                 cmd._append = 1;
                 cmd._out_error = 1;
             }
@@ -216,6 +207,7 @@ void parse(std::vector<Token> &rawTokens)
             break;
 
         case TOKEN_BACKGROUND:
+            // & is only allowed at the very end
             if (sc->_numberOfArguments == 0 || tokens[i + 1].type != TOKEN_EOF)
                 return syntaxError("'&' must come at the end of a command", sc);
             cmd._background = 1;
@@ -232,7 +224,9 @@ void parse(std::vector<Token> &rawTokens)
                                  !cmd._errFile && !cmd._background;
                 if (emptyLine)
                 {
-                    freeSimple(sc); // user just pressed Enter
+                    // user just pressed enter
+                    free(sc->_arguments);
+                    delete sc;
                     return;
                 }
                 return syntaxError("missing command", sc);
@@ -243,8 +237,6 @@ void parse(std::vector<Token> &rawTokens)
             return;
         }
     }
-
-    freeSimple(sc); // not reached, tokens always end with EOF
 }
 
 SimpleCommand::SimpleCommand()
@@ -370,9 +362,9 @@ void Command::execute()
         return;
     }
 
-    // print();   // command table (Part 1) - uncomment to debug
+    // print();   // uncomment to see the command table
 
-    // ---- built-in commands: run inside the shell, no fork ----
+    // exit and cd have to run in the shell itself, not in a child
     if (_numberOfSimpleCommands == 1)
     {
         SimpleCommand *first = _simpleCommands[0];
@@ -392,12 +384,12 @@ void Command::execute()
             }
             else
             {
-                const char *dir = (first->_numberOfArguments == 2) ? first->_arguments[1]
-                                                                    : getenv("HOME");
-                if (dir && strcmp(dir, "~") == 0)
-                    dir = getenv("HOME");
+                // no argument (or ~) means go home
+                const char *dir = getenv("HOME");
+                if (first->_numberOfArguments == 2 && strcmp(first->_arguments[1], "~") != 0)
+                    dir = first->_arguments[1];
 
-                if (!dir)
+                if (dir == NULL)
                     fprintf(stderr, "myshell: cd: HOME not set\n");
                 else if (chdir(dir) != 0)
                     fprintf(stderr, "myshell: cd: %s: %s\n", dir, strerror(errno));
@@ -407,13 +399,16 @@ void Command::execute()
         }
     }
 
-    // save the real stdin/stdout/stderr so we can restore them afterwards
-    int defIn = dup(0), defOut = dup(1), defErr = dup(2);
+    // keep copies of stdin/stdout/stderr to put them back at the end
+    int defIn = dup(0);
+    int defOut = dup(1);
+    int defErr = dup(2);
 
-    int fdIn = -1, fdOut = -1;
+    int fdIn = -1;
+    int fdOut = -1;
     bool ok = true;
 
-    // ---- open redirection files ----
+    // open the redirection files
     if (_inputFile)
     {
         fdIn = open(_inputFile, O_RDONLY);
@@ -423,9 +418,15 @@ void Command::execute()
             ok = false;
         }
     }
+
     if (ok && _outFile)
     {
-        int flags = O_WRONLY | O_CREAT | (_append ? O_APPEND : O_TRUNC);
+        int flags = O_WRONLY | O_CREAT;
+        if (_append)
+            flags |= O_APPEND;
+        else
+            flags |= O_TRUNC;
+
         fdOut = open(_outFile, flags, 0644);
         if (fdOut < 0)
         {
@@ -433,11 +434,13 @@ void Command::execute()
             ok = false;
         }
     }
+
     if (ok && _errFile)
     {
         if (_out_error && fdOut >= 0)
         {
-            dup2(fdOut, 2); // >>&  : stderr goes where stdout goes
+            // >>& so stderr goes to the same place as stdout
+            dup2(fdOut, 2);
         }
         else
         {
@@ -455,10 +458,13 @@ void Command::execute()
         }
     }
 
+    // something failed, clean up and don't run anything
     if (!ok)
     {
-        if (fdIn >= 0) close(fdIn);
-        if (fdOut >= 0) close(fdOut);
+        if (fdIn >= 0)
+            close(fdIn);
+        if (fdOut >= 0)
+            close(fdOut);
         dup2(defErr, 2);
         close(defIn);
         close(defOut);
@@ -467,19 +473,21 @@ void Command::execute()
         return;
     }
 
-    // ---- create the process chain ----
+    // one process for each simple command
     std::vector<pid_t> pids;
     int curIn = (fdIn >= 0) ? fdIn : dup(defIn);
 
     for (int i = 0; i < _numberOfSimpleCommands; i++)
     {
-        dup2(curIn, 0); // this command reads from curIn
+        // this command reads from curIn
+        dup2(curIn, 0);
         close(curIn);
 
         int nextIn = -1;
+
         if (i == _numberOfSimpleCommands - 1)
         {
-            // last command: write to the output file or the terminal
+            // last command, write to the file or to the terminal
             if (fdOut >= 0)
             {
                 dup2(fdOut, 1);
@@ -493,7 +501,7 @@ void Command::execute()
         }
         else
         {
-            // not last: write into a pipe, the next command reads from it
+            // not the last one, write into a pipe, the next command reads from it
             int p[2];
             if (pipe(p) < 0)
             {
@@ -509,24 +517,27 @@ void Command::execute()
         if (pid < 0)
         {
             perror("myshell: fork");
-            if (nextIn >= 0) close(nextIn);
+            if (nextIn >= 0)
+                close(nextIn);
             break;
         }
 
         if (pid == 0)
         {
-            // child
+            // child: Ctrl-C should kill it, and close what it doesn't need
             signal(SIGINT, SIG_DFL);
             close(defIn);
             close(defOut);
             close(defErr);
-            if (fdOut >= 0) close(fdOut);
-            if (nextIn >= 0) close(nextIn);
+            if (fdOut >= 0)
+                close(fdOut);
+            if (nextIn >= 0)
+                close(nextIn);
 
             SimpleCommand *sc = _simpleCommands[i];
             execvp(sc->_arguments[0], sc->_arguments);
 
-            // only reached if execvp failed
+            // we only get here if execvp failed
             if (errno == ENOENT)
                 fprintf(stderr, "myshell: %s: command not found\n", sc->_arguments[0]);
             else
@@ -538,16 +549,17 @@ void Command::execute()
         curIn = nextIn;
     }
 
-    // ---- restore the shell's own stdin/stdout/stderr ----
+    // put the shell's stdin/stdout/stderr back
     dup2(defIn, 0);
     dup2(defOut, 1);
     dup2(defErr, 2);
     close(defIn);
     close(defOut);
     close(defErr);
-    if (fdOut >= 0) close(fdOut);
+    if (fdOut >= 0)
+        close(fdOut);
 
-    // ---- wait (unless it is a background command) ----
+    // wait for the children, unless the command ends with &
     if (!_background)
     {
         for (size_t k = 0; k < pids.size(); k++)
@@ -555,7 +567,7 @@ void Command::execute()
             int status;
             pid_t r = waitpid(pids[k], &status, 0);
             if (r > 0)
-                logChild(r, status);   // (if the SIGCHLD handler got it first, it logged it)
+                logChild(r, status);
         }
     }
 
@@ -573,28 +585,29 @@ SimpleCommand *Command::_currentSimpleCommand;
 
 int main()
 {
-    // Ctrl-C must not kill the shell (children reset this to default)
+    // the shell must not die on Ctrl-C
     signal(SIGINT, SIG_IGN);
 
-    // log file for terminated children
     logFd = open("shell.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
     if (logFd < 0)
         perror("myshell: cannot open shell.log");
 
     struct sigaction sa;
-    sa.sa_handler = sigchldHandler;
+    sa.sa_handler = childHandler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
     sigaction(SIGCHLD, &sa, NULL);
 
     std::string input;
     Command::_currentCommand.prompt();
+
     while (std::getline(std::cin, input))
     {
         std::vector<Token> tokens = tokenize(input);
         parse(tokens);
         Command::_currentCommand.prompt();
     }
+
     printf("\n");
     return 0;
 }
