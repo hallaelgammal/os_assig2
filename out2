@@ -1,0 +1,28 @@
+total 864
+drwxrwxr-x 3 hallaelgammal hallaelgammal   4096 Oct 24 13:55 .
+drwxrwxr-x 3 hallaelgammal hallaelgammal   4096 Oct 24 12:37 ..
+drwxrwxr-x 7 hallaelgammal hallaelgammal   4096 Oct 24 13:46 .git
+-rw-rw-r-- 1 hallaelgammal hallaelgammal    200 Oct 22 21:49 Makefile
+-rw-rw-r-- 1 hallaelgammal hallaelgammal     11 Oct 22 21:31 README.md
+-rw-rw-r-- 1 hallaelgammal hallaelgammal  12742 Oct 24 13:53 command.cc
+-rw-rw-r-- 1 hallaelgammal hallaelgammal    648 Oct 24 12:57 command.h
+-rw-rw-r-- 1 hallaelgammal hallaelgammal 330344 Oct 24 13:54 command.o
+-rwxrwxr-x 1 hallaelgammal hallaelgammal 269976 Oct 24 13:54 myshell
+-rw-r--r-- 1 hallaelgammal hallaelgammal      0 Oct 24 13:55 out
+-rw-rw-r-- 1 hallaelgammal hallaelgammal   1954 Oct 24 12:56 tokenizer.cc
+-rw-rw-r-- 1 hallaelgammal hallaelgammal    456 Oct 24 12:51 tokenizer.h
+-rw-rw-r-- 1 hallaelgammal hallaelgammal 232976 Oct 24 13:13 tokenizer.o
+total 868
+drwxrwxr-x 3 hallaelgammal hallaelgammal   4096 Oct 24 13:55 .
+drwxrwxr-x 3 hallaelgammal hallaelgammal   4096 Oct 24 12:37 ..
+drwxrwxr-x 7 hallaelgammal hallaelgammal   4096 Oct 24 13:46 .git
+-rw-rw-r-- 1 hallaelgammal hallaelgammal    200 Oct 22 21:49 Makefile
+-rw-rw-r-- 1 hallaelgammal hallaelgammal     11 Oct 22 21:31 README.md
+-rw-rw-r-- 1 hallaelgammal hallaelgammal  12742 Oct 24 13:53 command.cc
+-rw-rw-r-- 1 hallaelgammal hallaelgammal    648 Oct 24 12:57 command.h
+-rw-rw-r-- 1 hallaelgammal hallaelgammal 330344 Oct 24 13:54 command.o
+-rwxrwxr-x 1 hallaelgammal hallaelgammal 269976 Oct 24 13:54 myshell
+-rw-r--r-- 1 hallaelgammal hallaelgammal    912 Oct 24 13:55 out
+-rw-rw-r-- 1 hallaelgammal hallaelgammal   1954 Oct 24 12:56 tokenizer.cc
+-rw-rw-r-- 1 hallaelgammal hallaelgammal    456 Oct 24 12:51 tokenizer.h
+-rw-rw-r-- 1 hallaelgammal hallaelgammal 232976 Oct 24 13:13 tokenizer.o

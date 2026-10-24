@@ -18,6 +18,63 @@
 #include "command.h"
 #include "tokenizer.h"
 
+// ---------------- child-termination log (Part 3) ----------------
+static int logFd = -1;
+
+// only write() is used below so these are safe to call from a signal handler
+static void logStr(const char *s)
+{
+    ssize_t r = write(logFd, s, strlen(s));
+    (void)r;
+}
+
+static void logNum(long n)
+{
+    char buf[24];
+    int i = 23;
+    buf[i] = 0;
+    bool neg = n < 0;
+    if (neg)
+        n = -n;
+    do
+    {
+        buf[--i] = '0' + (n % 10);
+        n /= 10;
+    } while (n > 0);
+    if (neg)
+        buf[--i] = '-';
+    logStr(buf + i);
+}
+
+static void logChild(pid_t pid, int status)
+{
+    if (logFd < 0)
+        return;
+    logStr("Child process ");
+    logNum(pid);
+    if (WIFEXITED(status))
+    {
+        logStr(" terminated normally, exit status ");
+        logNum(WEXITSTATUS(status));
+    }
+    else if (WIFSIGNALED(status))
+    {
+        logStr(" killed by signal ");
+        logNum(WTERMSIG(status));
+    }
+    logStr("\n");
+}
+
+static void sigchldHandler(int)
+{
+    int savedErrno = errno;
+    int status;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+        logChild(pid, status);
+    errno = savedErrno;
+}
+
 
 static bool isWord(TokenType t)
 {
@@ -315,6 +372,41 @@ void Command::execute()
 
     // print();   // command table (Part 1) - uncomment to debug
 
+    // ---- built-in commands: run inside the shell, no fork ----
+    if (_numberOfSimpleCommands == 1)
+    {
+        SimpleCommand *first = _simpleCommands[0];
+
+        if (strcmp(first->_arguments[0], "exit") == 0)
+        {
+            printf(" Good bye!!\n");
+            clear();
+            exit(0);
+        }
+
+        if (strcmp(first->_arguments[0], "cd") == 0)
+        {
+            if (first->_numberOfArguments > 2)
+            {
+                fprintf(stderr, "myshell: cd: too many arguments\n");
+            }
+            else
+            {
+                const char *dir = (first->_numberOfArguments == 2) ? first->_arguments[1]
+                                                                    : getenv("HOME");
+                if (dir && strcmp(dir, "~") == 0)
+                    dir = getenv("HOME");
+
+                if (!dir)
+                    fprintf(stderr, "myshell: cd: HOME not set\n");
+                else if (chdir(dir) != 0)
+                    fprintf(stderr, "myshell: cd: %s: %s\n", dir, strerror(errno));
+            }
+            clear();
+            return;
+        }
+    }
+
     // save the real stdin/stdout/stderr so we can restore them afterwards
     int defIn = dup(0), defOut = dup(1), defErr = dup(2);
 
@@ -459,11 +551,17 @@ void Command::execute()
     if (!_background)
     {
         for (size_t k = 0; k < pids.size(); k++)
-            waitpid(pids[k], NULL, 0);
+        {
+            int status;
+            pid_t r = waitpid(pids[k], &status, 0);
+            if (r > 0)
+                logChild(r, status);   // (if the SIGCHLD handler got it first, it logged it)
+        }
     }
 
     clear();
 }
+
 void Command::prompt()
 {
     printf("myshell>");
@@ -475,6 +573,20 @@ SimpleCommand *Command::_currentSimpleCommand;
 
 int main()
 {
+    // Ctrl-C must not kill the shell (children reset this to default)
+    signal(SIGINT, SIG_IGN);
+
+    // log file for terminated children
+    logFd = open("shell.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (logFd < 0)
+        perror("myshell: cannot open shell.log");
+
+    struct sigaction sa;
+    sa.sa_handler = sigchldHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa, NULL);
+
     std::string input;
     Command::_currentCommand.prompt();
     while (std::getline(std::cin, input))
